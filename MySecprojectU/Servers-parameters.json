@@ -1,0 +1,26 @@
+[
+	{
+		"ParameterKey": "EnvironmentName",
+		"ParameterValue": "UdacityProject"
+	},
+    {
+        "ParameterKey": "WebAppAMI",
+		"ParameterValue": "ami-005de95e8ff495156" 
+    },
+    {
+        "ParameterKey": "JumpboxAMI",
+		"ParameterValue": "ami-0022f774911c1d690"
+    },
+    {
+        "ParameterKey": "JumpboxKey",
+		"ParameterValue": "vockey"
+    },
+    {
+        "ParameterKey": "MyIP",
+		"ParameterValue": "0.0.0.0/0"
+    },
+    {
+        "ParameterKey": "WebAppInstanceType",
+		"ParameterValue": "t3.medium"
+    }
+]

@@ -1,0 +1,226 @@
+Parameters:
+  EnvironmentName:
+    Description: Project2 Environment Name
+    Type: String
+
+  WebAppAMI:
+    Description: Used AMI for Web Servers
+    Type: String
+
+  WebAppInstanceType:
+    Description: Web Servers Instance Type
+    Type: String
+  
+  JumpboxAMI:
+    Description: Used AMI for Jumpbox
+    Type: String
+  
+  JumpboxKey:
+    Description: Keypair used by Jumpbox
+    Type: String
+
+  MyIP:
+    Description: My Local IP Address
+    Type: String
+
+Resources:
+  
+# S3 ReadOnly IAM Role For the Instance:
+  S3RORole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+
+# Web App Instance Profile
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: 
+      Roles: 
+        - !Ref S3RORole
+
+# Bastion Host Security Group
+  JumpboxSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Jumpbox Security Group to SSH Web Servers
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+      SecurityGroupIngress:
+        - CidrIp: !Ref MyIP
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Jumpbox SG
+      VpcId:
+        Fn::ImportValue: !Sub ${EnvironmentName}-VPCID
+
+# Bastion Host
+  Jumpbox:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref JumpboxAMI
+      InstanceType: t2.micro
+      KeyName: !Ref JumpboxKey
+      NetworkInterfaces: 
+        - DeviceIndex: "0"
+          GroupSet: 
+            - !Ref JumpboxSG
+          SubnetId:
+            Fn::ImportValue: !Sub ${EnvironmentName}-PUBSubnet1
+
+# WebServers Security Group
+  WebAppSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Web App Security Group Allows http
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} WebServers SG
+      VpcId:
+        Fn::ImportValue: !Sub ${EnvironmentName}-VPCID
+
+# WebServers Launch Configuration
+  AppLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      IamInstanceProfile: !Ref InstanceProfile
+      ImageId: !Ref WebAppAMI
+      InstanceType: !Ref WebAppInstanceType
+      SecurityGroups:
+        - !Ref WebAppSG
+      BlockDeviceMappings:
+      - DeviceName: "/dev/sda1"
+        Ebs:
+          VolumeSize: 10
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          apt-get update -y
+          apt-get install apache2 -y
+          systemctl start apache2.service
+          cd /var/www/html
+          echo "it works! Udagram, Udacity ,A web application created for Udacity Cloud DevOps Nanodegree project 02" > index.html
+
+# Web App Auto Scaling Group
+  WebAppASGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchConfigurationName: !Ref AppLaunchConfiguration
+      MaxSize: 6
+      MinSize: 4
+      TargetGroupARNs:
+        - !Ref LBTargetGroup
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub ${EnvironmentName}-PRIVSubnets
+      Tags:
+      - Key: Name
+        PropagateAtLaunch: true
+        Value: !Sub ${EnvironmentName} AutoScaling Group
+
+# Load Balancer Security Group
+  LBSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Load Balancer Security Group Allows http only
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} LB Security Group
+      VpcId:
+        Fn::ImportValue: !Sub ${EnvironmentName}-VPCID
+
+# Web App Load Balancer
+  WebAppLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      SecurityGroups:
+        - !Ref LBSecGroup
+      Subnets:
+        - Fn::ImportValue: !Sub ${EnvironmentName}-PUBSubnet1
+        - Fn::ImportValue: !Sub ${EnvironmentName}-PUBSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} APP Load Balancer
+
+#Target Group
+  LBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 20
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId:
+        Fn::ImportValue: !Sub ${EnvironmentName}-VPCID
+
+# Load Balancer Listener
+  LBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref LBTargetGroup
+      LoadBalancerArn: !Ref WebAppLB
+      Port: 80
+      Protocol: HTTP
+
+# Listener Rule
+  LBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties: 
+      Actions: 
+        - TargetGroupArn: !Ref LBTargetGroup
+          Type: forward
+      Conditions:
+        - Field: path-pattern
+          Values: [/]
+      ListenerArn: !Ref LBListener
+      Priority: 1
+
+Outputs:
+ LoadBalancerURL:
+   Description: The Load Balancer URL
+   Value:
+     Fn::Join: [ "", [ "http://", !GetAtt WebAppLB.DNSName ] ]
